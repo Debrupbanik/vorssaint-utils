@@ -403,7 +403,8 @@ enum RadialMenuActivationMode: String, CaseIterable, Identifiable {
     }
 
     func startsHeld(requestedHold: Bool, hasHeldButton: Bool,
-                    shortcutHasModifiers: Bool) -> Bool {
+                    shortcutHasModifiers: Bool, isDragToActivate: Bool = false) -> Bool {
+        if isDragToActivate && hasHeldButton { return true }
         guard self != .press else { return false }
         return hasHeldButton || (requestedHold && shortcutHasModifiers)
     }

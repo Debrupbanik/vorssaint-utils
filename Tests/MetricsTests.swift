@@ -15211,13 +15211,15 @@ struct MetricsTests {
                "the radial activation mode decodes known values and safely falls back")
         expect(!RadialMenuActivationMode.press.startsHeld(
                     requestedHold: true, hasHeldButton: false, shortcutHasModifiers: true)
+                && RadialMenuActivationMode.press.startsHeld(
+                    requestedHold: true, hasHeldButton: true, shortcutHasModifiers: false, isDragToActivate: true)
                 && RadialMenuActivationMode.hold.startsHeld(
                     requestedHold: true, hasHeldButton: false, shortcutHasModifiers: true)
                 && RadialMenuActivationMode.pressOrHold.startsHeld(
                     requestedHold: false, hasHeldButton: true, shortcutHasModifiers: false)
                 && !RadialMenuActivationMode.hold.startsHeld(
                     requestedHold: false, hasHeldButton: false, shortcutHasModifiers: true),
-               "only hold-capable summons enter the held phase")
+               "only hold-capable summons enter the held phase, and drag-to-activate always enters hold phase on promotion")
         expect(RadialMenuActivationMode.pressOrHold.releaseAction(hasSelection: false) == .stayOpen
                 && RadialMenuActivationMode.hold.releaseAction(hasSelection: false) == .dismiss
                 && RadialMenuActivationMode.hold.releaseAction(hasSelection: true) == .select,

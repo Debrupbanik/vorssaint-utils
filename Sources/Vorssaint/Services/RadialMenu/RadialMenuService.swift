@@ -150,15 +150,18 @@ final class RadialMenuService: ObservableObject {
     }
 
     private func isTrackedButtonDown() -> Bool {
-        guard let button = pendingMouseGesture?.button ?? summoningMouseButton else { return false }
-        return CGEventSource.buttonState(.combinedSessionState, mouseButton: CGMouseButton(rawValue: UInt32(button)) ?? .left)
+        guard let button = pendingMouseGesture?.button ?? summoningMouseButton,
+              button >= 0, button < 32 else { return false }
+        return (NSEvent.pressedMouseButtons & (1 << button)) != 0
     }
 
     private func flushPendingDown(proxy: CGEventTapProxy?, at point: CGPoint?) {
         guard let pending = pendingMouseGesture else { return }
         pendingMouseGesture = nil
         let down = pending.down
-        down.location = point ?? pending.origin
+        if let point {
+            down.location = point
+        }
         down.timestamp = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventMarker)
         if let proxy {
@@ -238,6 +241,7 @@ final class RadialMenuService: ObservableObject {
 
         let pressed = Int(event.getIntegerValueField(.mouseEventButtonNumber))
         let button = Int64(pressed)
+        let mouseLocation = NSEvent.mouseLocation
 
         // While the mouse button shortcuts capture row is listening, the
         // press belongs to it, even this wheel's own summoner: that capture
@@ -284,7 +288,7 @@ final class RadialMenuService: ObservableObject {
                 )
             case .otherMouseDragged:
                 let pastThreshold = pendingMouseGesture.map {
-                    RadialMouseGestureSupport.exceedsThreshold(from: $0.origin, to: event.location)
+                    RadialMouseGestureSupport.exceedsThreshold(from: $0.origin, to: mouseLocation)
                 } ?? false
                 input = .buttonDragged(tracked: isTracked, pastThreshold: pastThreshold)
             case .otherMouseUp:
@@ -307,13 +311,13 @@ final class RadialMenuService: ObservableObject {
                 down: down,
                 button: button,
                 profile: matchingProfile,
-                origin: event.location
+                origin: mouseLocation
             )
             return nil
 
         case .openImmediate:
             guard let matchingProfile else { return Unmanaged.passUnretained(event) }
-            beginSession(for: matchingProfile, hold: false, heldButton: button, anchorLocation: event.location)
+            beginSession(for: matchingProfile, hold: false, heldButton: button, anchorLocation: mouseLocation)
             return nil
 
         case .toggleSession:
@@ -326,7 +330,11 @@ final class RadialMenuService: ObservableObject {
         case .promote:
             guard let pending = pendingMouseGesture else { return nil }
             pendingMouseGesture = nil
-            beginSession(for: pending.profile, hold: true, heldButton: pending.button, anchorLocation: pending.origin)
+            beginSession(for: pending.profile,
+                         hold: true,
+                         heldButton: pending.button,
+                         anchorLocation: pending.origin,
+                         isDragToActivate: true)
             pointerMoved()
             return nil
 
@@ -346,7 +354,8 @@ final class RadialMenuService: ObservableObject {
             return nil
 
         case .flushThenPass:
-            flushPendingDown(proxy: proxy, at: event.location)
+            flushPendingDown(proxy: tapDisabled ? nil : proxy,
+                             at: tapDisabled ? nil : event.location)
             return Unmanaged.passUnretained(event)
 
         case .dropState:
@@ -354,17 +363,18 @@ final class RadialMenuService: ObservableObject {
             return nil
 
         case .flushThenRestart:
-            flushPendingDown(proxy: proxy, at: event.location)
+            flushPendingDown(proxy: tapDisabled ? nil : proxy,
+                             at: tapDisabled ? nil : event.location)
             if let matchingProfile, matchingProfile.mouseDragToActivate, let down = event.copy() {
                 pendingMouseGesture = PendingRadialMouseGesture(
                     down: down,
                     button: button,
                     profile: matchingProfile,
-                    origin: event.location
+                    origin: mouseLocation
                 )
                 return nil
             } else if let matchingProfile {
-                beginSession(for: matchingProfile, hold: false, heldButton: button, anchorLocation: event.location)
+                beginSession(for: matchingProfile, hold: false, heldButton: button, anchorLocation: mouseLocation)
                 return nil
             }
             return Unmanaged.passUnretained(event)
@@ -400,7 +410,11 @@ final class RadialMenuService: ObservableObject {
         beginSession(for: targetProfile, hold: false)
     }
 
-    private func beginSession(for profile: RadialMenuProfile, hold: Bool, heldButton: Int64? = nil, anchorLocation: CGPoint? = nil) {
+    private func beginSession(for profile: RadialMenuProfile,
+                              hold: Bool,
+                              heldButton: Int64? = nil,
+                              anchorLocation: CGPoint? = nil,
+                              isDragToActivate: Bool = false) {
         let defaults = UserDefaults.standard
         let items = availableItems(profile.items)
         guard !items.isEmpty else {
@@ -422,7 +436,8 @@ final class RadialMenuService: ObservableObject {
         let startsHeld = activationMode.startsHeld(
             requestedHold: hold,
             hasHeldButton: heldButton != nil,
-            shortcutHasModifiers: !shortcut.modifiers.isEmpty)
+            shortcutHasModifiers: !shortcut.modifiers.isEmpty,
+            isDragToActivate: isDragToActivate)
         // Only held sessions need to retain their summoner. Press mode ignores
         // its release and stays up until selection, a second press or an
         // outside click.
