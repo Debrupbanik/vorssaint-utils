@@ -448,12 +448,12 @@ extension RadialMenuSupport {
 enum RadialMouseGestureState: Equatable {
     case idle
     case pending
-    case active
+    case active(isHoldPhase: Bool)
 }
 
 /// What the mouse event tap observed for a radial-menu mouse trigger.
 enum RadialMouseGestureInput: Equatable {
-    case buttonDown(sameButton: Bool, isDragToActivate: Bool)
+    case buttonDown(sameButton: Bool, isDragToActivate: Bool, sessionActive: Bool)
     case buttonDragged(tracked: Bool, pastThreshold: Bool)
     case buttonUp(tracked: Bool)
     case otherEvent
@@ -464,33 +464,39 @@ enum RadialMouseGestureInput: Equatable {
 enum RadialMouseGestureDecision: Equatable {
     case passThrough
     case arm
+    case openImmediate
+    case toggleSession
     case hold
     case promote
+    case updatePointer
     case replayThenPass
+    case finishActiveSession
+    case swallowUp
     case flushThenPass
-    case flushThenRestart
     case dropState
-    case endActiveSession
+    case flushThenRestart
 }
 
 enum RadialMouseGestureSupport {
-    /// How far the pointer must travel while holding the mouse button to
-    /// claim the gesture and open the radial menu.
-    static let dragThreshold: CGFloat = 8
-
-    static func exceedsThreshold(from origin: CGPoint, to point: CGPoint, threshold: CGFloat = dragThreshold) -> Bool {
+    static func exceedsThreshold(from origin: CGPoint,
+                                 to point: CGPoint,
+                                 threshold: CGFloat = RadialMenuLayout.moveActivationDistance) -> Bool {
         let dx = point.x - origin.x
         let dy = point.y - origin.y
-        return hypot(dx, dy) >= threshold
+        return (dx * dx + dy * dy).squareRoot() >= threshold
     }
 
     /// The pure custody decision for radial menu mouse button triggers.
-    static func decide(state: RadialMouseGestureState, input: RadialMouseGestureInput) -> RadialMouseGestureDecision {
+    static func decide(state: RadialMouseGestureState,
+                       input: RadialMouseGestureInput) -> RadialMouseGestureDecision {
         switch state {
         case .idle:
             switch input {
-            case .buttonDown(_, let isDragToActivate):
-                return isDragToActivate ? .arm : .promote
+            case .buttonDown(_, let isDragToActivate, let sessionActive):
+                if sessionActive { return .toggleSession }
+                return isDragToActivate ? .arm : .openImmediate
+            case .buttonUp(let tracked):
+                return tracked ? .swallowUp : .passThrough
             default:
                 return .passThrough
             }
@@ -502,24 +508,27 @@ enum RadialMouseGestureSupport {
                 return pastThreshold ? .promote : .hold
             case .buttonUp(let tracked):
                 return tracked ? .replayThenPass : .flushThenPass
-            case .buttonDown(let sameButton, let isDragToActivate):
-                return sameButton ? (isDragToActivate ? .dropState : .promote) : .flushThenRestart
+            case .buttonDown(let sameButton, _, _):
+                return sameButton ? .dropState : .flushThenRestart
             case .tapDisabled(let buttonStillDown):
                 return buttonStillDown ? .flushThenPass : .dropState
             case .otherEvent:
                 return .flushThenPass
             }
 
-        case .active:
+        case .active(let isHoldPhase):
             switch input {
             case .buttonDragged(let tracked, _):
-                return tracked ? .hold : .passThrough
+                return tracked ? .updatePointer : .passThrough
             case .buttonUp(let tracked):
-                return tracked ? .endActiveSession : .passThrough
-            case .buttonDown, .otherEvent:
-                return .passThrough
+                guard tracked else { return .passThrough }
+                return isHoldPhase ? .finishActiveSession : .swallowUp
+            case .buttonDown(let sameButton, _, _):
+                return sameButton ? .toggleSession : .passThrough
             case .tapDisabled:
                 return .dropState
+            case .otherEvent:
+                return .passThrough
             }
         }
     }
