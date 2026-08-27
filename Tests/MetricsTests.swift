@@ -13442,12 +13442,14 @@ struct MetricsTests {
                "diagonal movement beyond 8 points exceeds drag threshold")
 
         // Idle state transitions
-        expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonDown(sameButton: false, isDragToActivate: true, sessionActive: false)) == .arm,
+        expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonDown(sameButton: false, isDragToActivate: true, sessionActive: false, isHoldPhase: false)) == .arm,
                "idle + buttonDown with drag-to-activate arms custody")
-        expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonDown(sameButton: false, isDragToActivate: false, sessionActive: false)) == .openImmediate,
+        expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonDown(sameButton: false, isDragToActivate: false, sessionActive: false, isHoldPhase: false)) == .openImmediate,
                "idle + buttonDown without drag-to-activate opens immediately")
-        expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonDown(sameButton: false, isDragToActivate: false, sessionActive: true)) == .toggleSession,
-               "idle + buttonDown with session active toggles/closes session")
+        expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonDown(sameButton: false, isDragToActivate: false, sessionActive: true, isHoldPhase: false)) == .toggleSession,
+               "idle + buttonDown with session active and not in hold phase toggles/closes session")
+        expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonDown(sameButton: false, isDragToActivate: false, sessionActive: true, isHoldPhase: true)) == .hold,
+               "idle + buttonDown with session active in hold phase (keyboard chord held) swallows incidental button click")
         expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonUp(tracked: true)) == .swallowUp,
                "idle + tracked buttonUp swallows up event to prevent unpaired click leak")
         expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonUp(tracked: false)) == .passThrough,
@@ -13466,9 +13468,9 @@ struct MetricsTests {
                "pending + buttonUp below threshold replays held down and passes up through for normal click")
         expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonUp(tracked: false)) == .flushThenPass,
                "pending + untracked buttonUp flushes held down and passes event through")
-        expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonDown(sameButton: true, isDragToActivate: true, sessionActive: false)) == .dropState,
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonDown(sameButton: true, isDragToActivate: true, sessionActive: false, isHoldPhase: false)) == .dropState,
                "pending + duplicate buttonDown drops stale state")
-        expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonDown(sameButton: false, isDragToActivate: true, sessionActive: false)) == .flushThenRestart,
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonDown(sameButton: false, isDragToActivate: true, sessionActive: false, isHoldPhase: false)) == .flushThenRestart,
                "pending + different button down flushes held down and restarts")
         expect(RadialMouseGestureSupport.decide(state: .pending, input: .tapDisabled(buttonStillDown: true)) == .flushThenPass,
                "pending + tap disabled with button held flushes held down")
@@ -13488,8 +13490,10 @@ struct MetricsTests {
                "active press mode + tracked release swallows up without passing to app")
         expect(RadialMouseGestureSupport.decide(state: .active(isHoldPhase: true), input: .buttonUp(tracked: false)) == .passThrough,
                "active + untracked release passes through")
-        expect(RadialMouseGestureSupport.decide(state: .active(isHoldPhase: true), input: .buttonDown(sameButton: true, isDragToActivate: false, sessionActive: true)) == .toggleSession,
-               "active + tracked buttonDown toggles session")
+        expect(RadialMouseGestureSupport.decide(state: .active(isHoldPhase: false), input: .buttonDown(sameButton: true, isDragToActivate: false, sessionActive: true, isHoldPhase: false)) == .toggleSession,
+               "active not held + tracked buttonDown toggles session")
+        expect(RadialMouseGestureSupport.decide(state: .active(isHoldPhase: true), input: .buttonDown(sameButton: true, isDragToActivate: false, sessionActive: true, isHoldPhase: true)) == .hold,
+               "active held + tracked buttonDown remains swallowed")
         expect(RadialMouseGestureSupport.decide(state: .active(isHoldPhase: true), input: .tapDisabled(buttonStillDown: false)) == .dropState,
                "active + tap disabled drops state")
 

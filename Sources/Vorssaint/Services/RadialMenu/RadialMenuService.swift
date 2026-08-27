@@ -64,6 +64,7 @@ final class RadialMenuService: ObservableObject {
     }
     private var pendingMouseGesture: PendingRadialMouseGesture?
     private var summoningMouseButton: Int64?
+    private var cachedProfiles: [RadialMenuProfile] = []
 
     private var hotkeys: [UUID: QuickToolHotkey] = [:]
     private var panel: NSPanel?
@@ -105,6 +106,7 @@ final class RadialMenuService: ObservableObject {
             defaults.data(forKey: DefaultsKey.radialMenuProfiles),
             defaults: defaults
         )
+        cachedProfiles = profiles
 
         for hotkey in hotkeys.values { hotkey.unregister() }
         hotkeys.removeAll()
@@ -179,6 +181,7 @@ final class RadialMenuService: ObservableObject {
             defaults.data(forKey: DefaultsKey.radialMenuProfiles),
             defaults: defaults
         )
+        cachedProfiles = currentProfiles
         let hasAnyButton = currentProfiles.contains {
             RadialMenuMouseTrigger.sanitized($0.mouseButton).buttonNumber != nil
         }
@@ -230,13 +233,13 @@ final class RadialMenuService: ObservableObject {
     }
 
     private func handleMouseTap(proxy: CGEventTapProxy?, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        if event.getIntegerValueField(.eventSourceUserData) == Self.syntheticEventMarker {
-            return Unmanaged.passUnretained(event)
-        }
-
         let tapDisabled = type == .tapDisabledByTimeout || type == .tapDisabledByUserInput
         if tapDisabled, let mouseTap {
             CGEvent.tapEnable(tap: mouseTap, enable: true)
+        }
+
+        if event.getIntegerValueField(.eventSourceUserData) == Self.syntheticEventMarker {
+            return Unmanaged.passUnretained(event)
         }
 
         let pressed = Int(event.getIntegerValueField(.mouseEventButtonNumber))
@@ -259,12 +262,7 @@ final class RadialMenuService: ObservableObject {
             lastMouseButtonSeen = pressed
         }
 
-        let defaults = UserDefaults.standard
-        let profiles = RadialMenuSupport.decodeProfiles(
-            defaults.data(forKey: DefaultsKey.radialMenuProfiles),
-            defaults: defaults
-        )
-        let matchingProfile = profiles.first(where: {
+        let matchingProfile = cachedProfiles.first(where: {
             RadialMenuMouseTrigger.sanitized($0.mouseButton).buttonNumber == button
         })
 
@@ -284,7 +282,8 @@ final class RadialMenuService: ObservableObject {
                 input = .buttonDown(
                     sameButton: trackedButton == button,
                     isDragToActivate: matchingProfile.mouseDragToActivate,
-                    sessionActive: sessionActive
+                    sessionActive: sessionActive,
+                    isHoldPhase: holdPhase
                 )
             case .otherMouseDragged:
                 let pastThreshold = pendingMouseGesture.map {
@@ -343,7 +342,32 @@ final class RadialMenuService: ObservableObject {
             return nil
 
         case .replayThenPass:
-            flushPendingDown(proxy: proxy, at: event.location)
+            guard let pending = pendingMouseGesture else {
+                return Unmanaged.passUnretained(event)
+            }
+            pendingMouseGesture = nil
+            if let direction = MouseNavigationSupport.direction(forButtonNumber: pending.button) {
+                let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                let isPassThrough = MouseNavigationSupport.shouldPassThrough(
+                    bundleIdentifier: bundleID,
+                    webURLHandlers: MouseNavigationService.shared.registeredWebHandlers
+                )
+                if !isPassThrough {
+                    DispatchQueue.main.async {
+                        MouseNavigationService.shared.navigate(direction)
+                    }
+                    return nil
+                }
+            }
+            let down = pending.down
+            down.location = event.location
+            down.timestamp = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+            down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventMarker)
+            if let proxy {
+                down.tapPostEvent(proxy)
+            } else {
+                down.post(tap: .cgSessionEventTap)
+            }
             return Unmanaged.passUnretained(event)
 
         case .finishActiveSession:

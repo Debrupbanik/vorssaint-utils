@@ -454,7 +454,7 @@ enum RadialMouseGestureState: Equatable {
 
 /// What the mouse event tap observed for a radial-menu mouse trigger.
 enum RadialMouseGestureInput: Equatable {
-    case buttonDown(sameButton: Bool, isDragToActivate: Bool, sessionActive: Bool)
+    case buttonDown(sameButton: Bool, isDragToActivate: Bool, sessionActive: Bool, isHoldPhase: Bool)
     case buttonDragged(tracked: Bool, pastThreshold: Bool)
     case buttonUp(tracked: Bool)
     case otherEvent
@@ -493,8 +493,10 @@ enum RadialMouseGestureSupport {
         switch state {
         case .idle:
             switch input {
-            case .buttonDown(_, let isDragToActivate, let sessionActive):
-                if sessionActive { return .toggleSession }
+            case .buttonDown(_, let isDragToActivate, let sessionActive, let isHoldPhase):
+                if sessionActive {
+                    return isHoldPhase ? .hold : .toggleSession
+                }
                 return isDragToActivate ? .arm : .openImmediate
             case .buttonUp(let tracked):
                 return tracked ? .swallowUp : .passThrough
@@ -509,7 +511,7 @@ enum RadialMouseGestureSupport {
                 return pastThreshold ? .promote : .hold
             case .buttonUp(let tracked):
                 return tracked ? .replayThenPass : .flushThenPass
-            case .buttonDown(let sameButton, _, _):
+            case .buttonDown(let sameButton, _, _, _):
                 return sameButton ? .dropState : .flushThenRestart
             case .tapDisabled(let buttonStillDown):
                 return buttonStillDown ? .flushThenPass : .dropState
@@ -524,7 +526,8 @@ enum RadialMouseGestureSupport {
             case .buttonUp(let tracked):
                 guard tracked else { return .passThrough }
                 return isHoldPhase ? .finishActiveSession : .swallowUp
-            case .buttonDown(let sameButton, _, _):
+            case .buttonDown(let sameButton, _, _, _):
+                if isHoldPhase { return .hold }
                 return sameButton ? .toggleSession : .passThrough
             case .tapDisabled:
                 return .dropState

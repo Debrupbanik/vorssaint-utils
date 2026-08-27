@@ -238,6 +238,12 @@ final class MouseNavigationService: ObservableObject {
         case noNavigationCommand
     }
 
+    var registeredWebHandlers: Set<String> { webURLHandlers }
+
+    func navigate(_ direction: MouseNavigationDirection) {
+        perform(direction)
+    }
+
     private func perform(_ direction: MouseNavigationDirection) {
         switch pressMenuItem(shortcut: MouseNavigationKeys.shortcut(for: direction)) {
         case .pressed:
