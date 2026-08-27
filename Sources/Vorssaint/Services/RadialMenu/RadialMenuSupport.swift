@@ -73,6 +73,7 @@ struct RadialMenuProfile: Codable, Identifiable, Equatable {
     var color: RadialMenuColor = .accent
     var shortcut: String = ""
     var mouseButton: String = RadialMenuMouseTrigger.off.rawValue
+    var mouseDragToActivate: Bool = false
     var items: [RadialMenuItem] = []
 
     func displayName(_ text: RadialMenuFeatureStrings) -> String {
@@ -82,7 +83,7 @@ struct RadialMenuProfile: Codable, Identifiable, Equatable {
 
 extension RadialMenuProfile {
     private enum CodingKeys: String, CodingKey {
-        case id, name, color, shortcut, mouseButton, items
+        case id, name, color, shortcut, mouseButton, mouseDragToActivate, items
     }
 
     init(from decoder: Decoder) throws {
@@ -92,6 +93,7 @@ extension RadialMenuProfile {
                   color: try container.decodeIfPresent(RadialMenuColor.self, forKey: .color) ?? .accent,
                   shortcut: try container.decodeIfPresent(String.self, forKey: .shortcut) ?? "",
                   mouseButton: try container.decodeIfPresent(String.self, forKey: .mouseButton) ?? RadialMenuMouseTrigger.off.rawValue,
+                  mouseDragToActivate: try container.decodeIfPresent(Bool.self, forKey: .mouseDragToActivate) ?? false,
                   items: try container.decodeIfPresent([FailableRadialMenuItem].self, forKey: .items)?
                       .compactMap(\.value) ?? [])
     }
@@ -177,12 +179,14 @@ enum RadialMenuProfilePreset: String, CaseIterable, Identifiable {
     func createProfile(name: String? = nil,
                        color: RadialMenuColor? = nil,
                        shortcut: String = "",
-                       mouseButton: String = RadialMenuMouseTrigger.off.rawValue) -> RadialMenuProfile {
+                       mouseButton: String = RadialMenuMouseTrigger.off.rawValue,
+                       mouseDragToActivate: Bool = false) -> RadialMenuProfile {
         RadialMenuProfile(id: UUID(),
                            name: name ?? "",
                            color: color ?? defaultColor,
                            shortcut: shortcut,
                            mouseButton: mouseButton,
+                           mouseDragToActivate: mouseDragToActivate,
                            items: makeItems())
     }
 }
@@ -435,6 +439,88 @@ extension RadialMenuSupport {
         let profiles = decodeProfiles(defaults.data(forKey: DefaultsKey.radialMenuProfiles), defaults: defaults)
         return profiles.contains {
             RadialMenuMouseTrigger.sanitized($0.mouseButton).buttonNumber == button
+        }
+    }
+}
+
+/// Whether a radial-menu mouse-button press is undecided (holding custody to
+/// distinguish a click from a drag), currently active as an open wheel, or idle.
+enum RadialMouseGestureState: Equatable {
+    case idle
+    case pending
+    case active
+}
+
+/// What the mouse event tap observed for a radial-menu mouse trigger.
+enum RadialMouseGestureInput: Equatable {
+    case buttonDown(sameButton: Bool, isDragToActivate: Bool)
+    case buttonDragged(tracked: Bool, pastThreshold: Bool)
+    case buttonUp(tracked: Bool)
+    case otherEvent
+    case tapDisabled(buttonStillDown: Bool)
+}
+
+/// What the event tap does with a held mouse button event.
+enum RadialMouseGestureDecision: Equatable {
+    case passThrough
+    case arm
+    case hold
+    case promote
+    case replayThenPass
+    case flushThenPass
+    case flushThenRestart
+    case dropState
+    case endActiveSession
+}
+
+enum RadialMouseGestureSupport {
+    /// How far the pointer must travel while holding the mouse button to
+    /// claim the gesture and open the radial menu.
+    static let dragThreshold: CGFloat = 8
+
+    static func exceedsThreshold(from origin: CGPoint, to point: CGPoint, threshold: CGFloat = dragThreshold) -> Bool {
+        let dx = point.x - origin.x
+        let dy = point.y - origin.y
+        return hypot(dx, dy) >= threshold
+    }
+
+    /// The pure custody decision for radial menu mouse button triggers.
+    static func decide(state: RadialMouseGestureState, input: RadialMouseGestureInput) -> RadialMouseGestureDecision {
+        switch state {
+        case .idle:
+            switch input {
+            case .buttonDown(_, let isDragToActivate):
+                return isDragToActivate ? .arm : .promote
+            default:
+                return .passThrough
+            }
+
+        case .pending:
+            switch input {
+            case .buttonDragged(let tracked, let pastThreshold):
+                guard tracked else { return .flushThenPass }
+                return pastThreshold ? .promote : .hold
+            case .buttonUp(let tracked):
+                return tracked ? .replayThenPass : .flushThenPass
+            case .buttonDown(let sameButton, let isDragToActivate):
+                return sameButton ? (isDragToActivate ? .dropState : .promote) : .flushThenRestart
+            case .tapDisabled(let buttonStillDown):
+                return buttonStillDown ? .flushThenPass : .dropState
+            case .otherEvent:
+                return .flushThenPass
+            }
+
+        case .active:
+            switch input {
+            case .buttonDragged(let tracked, _):
+                return tracked ? .hold : .passThrough
+            case .buttonUp(let tracked):
+                return tracked ? .endActiveSession : .passThrough
+            case .buttonDown, .otherEvent:
+                return .passThrough
+            case .tapDisabled:
+                return .dropState
+            }
         }
     }
 }

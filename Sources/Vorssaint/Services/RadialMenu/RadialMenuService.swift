@@ -54,6 +54,16 @@ final class RadialMenuService: ObservableObject {
     /// render, true the moment a session fills the stack.
     var visible: Bool { sessionActive }
 
+    static let syntheticEventMarker: Int64 = 0x564F52535F524144 // "VORSRAD"
+
+    private struct PendingRadialMouseGesture {
+        let down: CGEvent
+        let button: Int64
+        let profile: RadialMenuProfile
+        let origin: CGPoint
+    }
+    private var pendingMouseGesture: PendingRadialMouseGesture?
+
     private var hotkeys: [UUID: QuickToolHotkey] = [:]
     private var panel: NSPanel?
     private var wheelCenter: CGPoint = .zero
@@ -128,6 +138,20 @@ final class RadialMenuService: ObservableObject {
     // app under the pointer; alive only while a button is configured, torn
     // down with the feature)
 
+    private func flushPendingDown(proxy: CGEventTapProxy?, at point: CGPoint?) {
+        guard let pending = pendingMouseGesture else { return }
+        pendingMouseGesture = nil
+        let down = pending.down
+        down.location = point ?? pending.origin
+        down.timestamp = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventMarker)
+        if let proxy {
+            down.tapPostEvent(proxy)
+        } else {
+            down.post(tap: .cgSessionEventTap)
+        }
+    }
+
     private func syncMouseTap(profiles: [RadialMenuProfile]? = nil) {
         let defaults = UserDefaults.standard
         let currentProfiles = profiles ?? RadialMenuSupport.decodeProfiles(
@@ -149,15 +173,16 @@ final class RadialMenuService: ObservableObject {
         guard mouseTap == nil, AXIsProcessTrusted() else { return }
         let mask = (CGEventMask(1) << CGEventType.otherMouseDown.rawValue)
             | (CGEventMask(1) << CGEventType.otherMouseUp.rawValue)
+            | (CGEventMask(1) << CGEventType.otherMouseDragged.rawValue)
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: mask,
-            callback: { _, type, event, userInfo in
+            callback: { proxy, type, event, userInfo in
                 guard let userInfo else { return Unmanaged.passUnretained(event) }
                 let service = Unmanaged<RadialMenuService>.fromOpaque(userInfo).takeUnretainedValue()
-                return service.handleMouseTap(type: type, event: event)
+                return service.handleMouseTap(proxy: proxy, type: type, event: event)
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else { return }
@@ -170,6 +195,7 @@ final class RadialMenuService: ObservableObject {
     }
 
     private func tearDownMouseTap() {
+        flushPendingDown(proxy: nil, at: nil)
         if let mouseTap {
             CGEvent.tapEnable(tap: mouseTap, enable: false)
             CFMachPortInvalidate(mouseTap)
@@ -182,9 +208,13 @@ final class RadialMenuService: ObservableObject {
         if isWatchingMouseButton { isWatchingMouseButton = false }
     }
 
-    private func handleMouseTap(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+    private func handleMouseTap(proxy: CGEventTapProxy?, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if event.getIntegerValueField(.eventSourceUserData) == Self.syntheticEventMarker {
+            return Unmanaged.passUnretained(event)
+        }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let mouseTap { CGEvent.tapEnable(tap: mouseTap, enable: true) }
+            flushPendingDown(proxy: nil, at: nil)
             return Unmanaged.passUnretained(event)
         }
         let pressed = Int(event.getIntegerValueField(.mouseEventButtonNumber))
@@ -192,6 +222,7 @@ final class RadialMenuService: ObservableObject {
         // press belongs to it, even this wheel's own summoner: that capture
         // tap swallows the gesture and tells the user the button is taken.
         if MouseButtonShortcutService.isCaptureActive {
+            flushPendingDown(proxy: proxy, at: event.location)
             return Unmanaged.passUnretained(event)
         }
         // While the settings screen is asking, every extra button that
@@ -201,36 +232,86 @@ final class RadialMenuService: ObservableObject {
         if isReportingMouseButtons, type == .otherMouseDown {
             lastMouseButtonSeen = pressed
         }
+        if MouseAppExceptions.shared.excludesActionTarget(.navigation, at: event.location) {
+            flushPendingDown(proxy: proxy, at: event.location)
+            return Unmanaged.passUnretained(event)
+        }
+
         let defaults = UserDefaults.standard
         let profiles = RadialMenuSupport.decodeProfiles(
             defaults.data(forKey: DefaultsKey.radialMenuProfiles),
             defaults: defaults
         )
-        guard let matchingProfile = profiles.first(where: {
-            RadialMenuMouseTrigger.sanitized($0.mouseButton).buttonNumber == Int64(pressed)
-        }) else {
+        let button = Int64(pressed)
+        let matchingProfile = profiles.first(where: {
+            RadialMenuMouseTrigger.sanitized($0.mouseButton).buttonNumber == button
+        })
+
+        if type == .otherMouseDown {
+            guard let matchingProfile else {
+                flushPendingDown(proxy: proxy, at: event.location)
+                return Unmanaged.passUnretained(event)
+            }
+            if matchingProfile.mouseDragToActivate {
+                flushPendingDown(proxy: proxy, at: event.location)
+                if sessionActive { endSession() }
+                guard let down = event.copy() else { return Unmanaged.passUnretained(event) }
+                pendingMouseGesture = PendingRadialMouseGesture(
+                    down: down,
+                    button: button,
+                    profile: matchingProfile,
+                    origin: event.location
+                )
+                return nil
+            } else {
+                flushPendingDown(proxy: proxy, at: event.location)
+                if !sessionActive {
+                    beginSession(for: matchingProfile, hold: false, heldButton: button, anchorLocation: event.location)
+                } else if !holdPhase {
+                    endSession()
+                }
+                return nil
+            }
+        }
+
+        if type == .otherMouseDragged {
+            if let pending = pendingMouseGesture {
+                guard pending.button == button else {
+                    flushPendingDown(proxy: proxy, at: event.location)
+                    return Unmanaged.passUnretained(event)
+                }
+                if RadialMouseGestureSupport.exceedsThreshold(from: pending.origin, to: event.location) {
+                    pendingMouseGesture = nil
+                    beginSession(for: pending.profile, hold: true, heldButton: pending.button, anchorLocation: pending.origin)
+                    pointerMoved()
+                    return nil
+                }
+                return nil
+            }
+            if sessionActive, holdPhase, holdButton == button {
+                pointerMoved()
+                return nil
+            }
             return Unmanaged.passUnretained(event)
         }
 
-        let button = Int64(pressed)
-        // The source lives on the main run loop, so this already runs on
-        // main; acting synchronously keeps a quick click ordered (the down
-        // opens the wheel before its own up arrives). The claimed button is
-        // the wheel's alone: both halves of every click are consumed, so the
-        // app under the pointer never sees half a gesture (the Settings
-        // caption promises exactly that).
-        if type == .otherMouseDown {
-            if !sessionActive {
-                beginSession(for: matchingProfile, hold: false, heldButton: button)
-            } else if !holdPhase {
-                endSession()
+        if type == .otherMouseUp {
+            if let pending = pendingMouseGesture {
+                guard pending.button == button else {
+                    flushPendingDown(proxy: proxy, at: event.location)
+                    return Unmanaged.passUnretained(event)
+                }
+                // Released without exceeding drag threshold: pass the original click to the app
+                flushPendingDown(proxy: proxy, at: event.location)
+                return Unmanaged.passUnretained(event)
             }
-            // A press during a held chord session means nothing and is
-            // swallowed with the rest.
-        } else if holdPhase, holdButton == button {
-            endHoldPhase()
+            if holdPhase, holdButton == button {
+                endHoldPhase()
+                return nil
+            }
         }
-        return nil
+
+        return Unmanaged.passUnretained(event)
     }
 
     // MARK: - Session
@@ -262,7 +343,7 @@ final class RadialMenuService: ObservableObject {
         beginSession(for: targetProfile, hold: false)
     }
 
-    private func beginSession(for profile: RadialMenuProfile, hold: Bool, heldButton: Int64? = nil) {
+    private func beginSession(for profile: RadialMenuProfile, hold: Bool, heldButton: Int64? = nil, anchorLocation: CGPoint? = nil) {
         let defaults = UserDefaults.standard
         let items = availableItems(profile.items)
         guard !items.isEmpty else {
@@ -319,11 +400,11 @@ final class RadialMenuService: ObservableObject {
         trail = []
         highlightedIndex = nil
         pointerActivated = false
-        openPointerLocation = NSEvent.mouseLocation
+        openPointerLocation = anchorLocation ?? NSEvent.mouseLocation
 
         let atPointer = defaults.bool(forKey: DefaultsKey.radialMenuAtPointer)
         let visibleFrame = NSScreen.pointerVisibleFrame
-        let wanted = atPointer ? NSEvent.mouseLocation
+        let wanted = atPointer ? (anchorLocation ?? NSEvent.mouseLocation)
                                : CGPoint(x: visibleFrame.midX, y: visibleFrame.midY)
         wheelCenter = clampedCenter(wanted, in: visibleFrame)
 

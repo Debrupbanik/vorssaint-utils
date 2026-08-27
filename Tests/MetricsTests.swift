@@ -11981,7 +11981,7 @@ struct MetricsTests {
                    "no em-dash in visible camera preview strings (\(language.rawValue))")
             let radialMenuValues = Mirror(reflecting: FeatureStrings.radialMenu(language)).children
                 .compactMap { $0.value as? String }
-            expect(radialMenuValues.count == 90 && radialMenuValues.allSatisfy { !$0.isEmpty },
+            expect(radialMenuValues.count == 92 && radialMenuValues.allSatisfy { !$0.isEmpty },
                    "every radial menu string is set for \(language.rawValue)")
             expect(radialMenuValues.allSatisfy { !$0.contains("—") },
                    "no em-dash in visible radial menu strings (\(language.rawValue))")
@@ -13425,6 +13425,89 @@ struct MetricsTests {
         let sanitizedInvalid = RadialMenuSupport.sanitized([itemWithInvalidIcon]).first
         expect(sanitizedInvalid?.customIconData == nil,
                "sanitized drops corrupted customIconData that cannot form an NSImage")
+
+        // MARK: Radial menu mouse drag-to-activate (issue #1024 / side button drag mode)
+
+        expect(!RadialMouseGestureSupport.exceedsThreshold(from: CGPoint(x: 100, y: 100),
+                                                          to: CGPoint(x: 105, y: 100),
+                                                          threshold: 8),
+               "movement under threshold does not exceed drag threshold")
+        expect(RadialMouseGestureSupport.exceedsThreshold(from: CGPoint(x: 100, y: 100),
+                                                         to: CGPoint(x: 108, y: 100),
+                                                         threshold: 8),
+               "movement at threshold exceeds drag threshold")
+        expect(RadialMouseGestureSupport.exceedsThreshold(from: CGPoint(x: 100, y: 100),
+                                                         to: CGPoint(x: 106, y: 106),
+                                                         threshold: 8),
+               "diagonal movement beyond 8 points exceeds drag threshold")
+
+        // Idle state transitions
+        expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonDown(sameButton: false, isDragToActivate: true)) == .arm,
+               "idle + buttonDown with drag-to-activate arms custody")
+        expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonDown(sameButton: false, isDragToActivate: false)) == .promote,
+               "idle + buttonDown without drag-to-activate opens immediately")
+        expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonUp(tracked: true)) == .passThrough,
+               "idle + buttonUp passes through")
+        expect(RadialMouseGestureSupport.decide(state: .idle, input: .buttonDragged(tracked: true, pastThreshold: true)) == .passThrough,
+               "idle + buttonDragged passes through")
+
+        // Pending state transitions (holding custody)
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonDragged(tracked: true, pastThreshold: false)) == .hold,
+               "pending + small drag keeps holding custody")
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonDragged(tracked: true, pastThreshold: true)) == .promote,
+               "pending + drag past threshold promotes to open wheel")
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonDragged(tracked: false, pastThreshold: true)) == .flushThenPass,
+               "pending + untracked drag flushes held down and passes drag through")
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonUp(tracked: true)) == .replayThenPass,
+               "pending + buttonUp below threshold replays held down and passes up through for normal click")
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonUp(tracked: false)) == .flushThenPass,
+               "pending + untracked buttonUp flushes held down and passes event through")
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonDown(sameButton: true, isDragToActivate: true)) == .dropState,
+               "pending + duplicate buttonDown drops stale state")
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .buttonDown(sameButton: false, isDragToActivate: true)) == .flushThenRestart,
+               "pending + different button down flushes held down and restarts")
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .tapDisabled(buttonStillDown: true)) == .flushThenPass,
+               "pending + tap disabled with button held flushes held down")
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .tapDisabled(buttonStillDown: false)) == .dropState,
+               "pending + tap disabled with button released drops state")
+        expect(RadialMouseGestureSupport.decide(state: .pending, input: .otherEvent) == .flushThenPass,
+               "pending + otherEvent flushes held down and passes through")
+
+        // Active state transitions
+        expect(RadialMouseGestureSupport.decide(state: .active, input: .buttonDragged(tracked: true, pastThreshold: true)) == .hold,
+               "active + tracked drag updates pointer selection")
+        expect(RadialMouseGestureSupport.decide(state: .active, input: .buttonDragged(tracked: false, pastThreshold: true)) == .passThrough,
+               "active + untracked drag passes through")
+        expect(RadialMouseGestureSupport.decide(state: .active, input: .buttonUp(tracked: true)) == .endActiveSession,
+               "active + tracked release executes/finishes radial menu session")
+        expect(RadialMouseGestureSupport.decide(state: .active, input: .buttonUp(tracked: false)) == .passThrough,
+               "active + untracked release passes through")
+        expect(RadialMouseGestureSupport.decide(state: .active, input: .tapDisabled(buttonStillDown: false)) == .dropState,
+               "active + tap disabled drops state")
+
+        // Profile serialization with mouseDragToActivate
+        let dragToActivateProfile = RadialMenuProfile(
+            id: UUID(),
+            name: "Drag Trigger",
+            color: .blue,
+            shortcut: "",
+            mouseButton: RadialMenuMouseTrigger.back.rawValue,
+            mouseDragToActivate: true,
+            items: []
+        )
+        let encodedDragProfileData = RadialMenuSupport.encodeProfiles([dragToActivateProfile])
+        let decodedDragProfile = RadialMenuSupport.decodeProfiles(encodedDragProfileData).first
+        expect(decodedDragProfile?.mouseDragToActivate == true
+                && decodedDragProfile?.mouseButton == RadialMenuMouseTrigger.back.rawValue,
+               "profile encodes and decodes mouseDragToActivate flag")
+
+        // Legacy profile without mouseDragToActivate JSON field defaults to false
+        let legacyProfileJSON = """
+        [{"id":"\(UUID().uuidString)","name":"Legacy","color":"accent","shortcut":"","mouseButton":"back","items":[]}]
+        """.data(using: .utf8)!
+        let decodedLegacyProfile = RadialMenuSupport.decodeProfiles(legacyProfileJSON).first
+        expect(decodedLegacyProfile?.mouseDragToActivate == false,
+               "legacy profile JSON without mouseDragToActivate defaults to false")
 
         // MARK: Dock click with AX-blind apps (issue #200)
 

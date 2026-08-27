@@ -302,7 +302,21 @@ struct RadialMenuSettings: View {
         .disabled(!enabled)
 
         if RadialMenuMouseTrigger.sanitized(profile.mouseButton) != .off {
-            if let button = RadialMenuMouseTrigger.sanitized(profile.mouseButton).buttonNumber,
+            Toggle(text.mouseDragToActivateLabel, isOn: Binding(
+                get: { profile.mouseDragToActivate },
+                set: { newValue in
+                    guard profiles.indices.contains(pIndex) else { return }
+                    profiles[pIndex].mouseDragToActivate = newValue
+                    persist()
+                }
+            ))
+            .disabled(!enabled)
+
+            if profile.mouseDragToActivate {
+                Text(text.mouseDragToActivateCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let button = RadialMenuMouseTrigger.sanitized(profile.mouseButton).buttonNumber,
                button == MouseButtonShortcutSupport.backButtonNumber
                 || button == MouseButtonShortcutSupport.forwardButtonNumber {
                 Text(text.mouseTriggerWarning)
