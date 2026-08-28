@@ -238,10 +238,15 @@ final class MouseNavigationService: ObservableObject {
         case noNavigationCommand
     }
 
-    var registeredWebHandlers: Set<String> { webURLHandlers }
-
-    func navigate(_ direction: MouseNavigationDirection) {
-        perform(direction)
+    @discardableResult
+    func navigate(_ direction: MouseNavigationDirection, at point: CGPoint) -> Bool {
+        guard isRunning,
+              !MouseNavigationSupport.shouldPassThrough(
+                  bundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                  webURLHandlers: webURLHandlers),
+              !MouseAppExceptions.shared.excludesActionTarget(.navigation, at: point) else { return false }
+        DispatchQueue.main.async { [weak self] in self?.perform(direction) }
+        return true
     }
 
     private func perform(_ direction: MouseNavigationDirection) {

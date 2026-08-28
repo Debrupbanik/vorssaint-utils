@@ -346,18 +346,9 @@ final class RadialMenuService: ObservableObject {
                 return Unmanaged.passUnretained(event)
             }
             pendingMouseGesture = nil
-            if let direction = MouseNavigationSupport.direction(forButtonNumber: pending.button) {
-                let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-                let isPassThrough = MouseNavigationSupport.shouldPassThrough(
-                    bundleIdentifier: bundleID,
-                    webURLHandlers: MouseNavigationService.shared.registeredWebHandlers
-                )
-                if !isPassThrough {
-                    DispatchQueue.main.async {
-                        MouseNavigationService.shared.navigate(direction)
-                    }
-                    return nil
-                }
+            if let direction = MouseNavigationSupport.direction(forButtonNumber: pending.button),
+               MouseNavigationService.shared.navigate(direction, at: event.location) {
+                return nil
             }
             let down = pending.down
             down.location = event.location
@@ -384,7 +375,10 @@ final class RadialMenuService: ObservableObject {
 
         case .dropState:
             pendingMouseGesture = nil
-            return nil
+            if sessionActive {
+                endSession()
+            }
+            return Unmanaged.passUnretained(event)
 
         case .flushThenRestart:
             flushPendingDown(proxy: tapDisabled ? nil : proxy,
